@@ -47,7 +47,7 @@
       <div class="sidebar-footer">
         <button id="settings-btn" class="footer-action"><span>⚙</span> Configuración <span class="footer-caret">↗</span></button>
         <button id="logout-btn" class="footer-action"><span>⇥</span> Cerrar sesión</button>
-        <div class="sidebar-version">OwnAIChat v0.2 · Open Source</div>
+        <div class="sidebar-version">OwnAIChat v0.4 · Open Source</div>
       </div>
     </aside>
 
@@ -57,7 +57,14 @@
         <div class="topbar-title" id="context-title">Conversación nueva</div>
         <div class="top-actions">
           <label class="provider-select"><span class="provider-dot"></span><select id="provider-select" aria-label="Proveedor de IA"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="gemini">Gemini</option><option value="anthropic">Claude</option></select></label>
-          <input id="model-input" class="model-input" aria-label="Modelo de IA" title="Identificador exacto del modelo" value="deepseek-chat" spellcheck="false" />
+          <div class="model-picker">
+            <div class="model-picker-controls">
+              <select id="model-select" class="model-select" aria-label="Modelo de IA" title="Elige el modelo para tus próximos mensajes"></select>
+              <button id="model-refresh" class="icon-btn" type="button" title="Actualizar modelos desde tu API" aria-label="Actualizar modelos">↻</button>
+            </div>
+            <small id="model-list-status" role="status" aria-live="polite">Modelos sugeridos</small>
+            <input id="model-input" class="model-input" aria-label="Identificador de modelo personalizado" placeholder="ID exacto del modelo" value="deepseek-flash" spellcheck="false" hidden />
+          </div>
           <button id="top-settings" class="icon-btn top-settings" title="Configurar API Keys">⚙</button>
         </div>
       </header>
@@ -77,6 +84,13 @@
       </div>
       <div class="compose-wrap">
         <form id="composer" class="composer">
+          <div class="generation-controls">
+            <label>Modo<select id="generation-mode" aria-label="Modo de respuesta"></select></label>
+            <label id="effort-control" hidden>Razonamiento<select id="generation-effort" aria-label="Nivel de razonamiento"></select></label>
+            <label id="quality-control" hidden>Calidad<select id="image-quality" aria-label="Calidad de imagen"></select></label>
+            <label id="size-control" hidden>Tamaño<select id="image-size" aria-label="Tamaño de imagen"></select></label>
+          </div>
+          <p id="generation-hint" class="generation-hint"></p>
           <textarea id="prompt" rows="1" maxlength="16000" placeholder="Escribe un mensaje..." aria-label="Mensaje a la IA"></textarea>
           <div class="composer-bottom"><div class="composer-hint"><span id="active-context">Sin proyecto</span><span class="composer-sep">·</span><span id="key-status">Configura tu API Key</span></div><button id="send" type="submit" class="send-btn" title="Enviar mensaje">↑</button></div>
         </form>
@@ -89,7 +103,29 @@
     <form method="dialog" class="modal-head"><div><h2>Configuración</h2><p>Gestiona tus API Keys de manera privada.</p></div><button class="icon-btn" aria-label="Cerrar">×</button></form>
     <div class="settings-info">🔒 Tus claves se cifran en el servidor antes de guardarse en D1. El navegador nunca vuelve a recibirlas.</div>
     <div id="providers-list" class="provider-cards"></div>
+    <div class="custom-heading"><h3>APIs personalizadas</h3><button id="add-connection" type="button" class="ghost-btn">＋ Añadir conexión</button></div>
+    <p class="connection-note">RunPod o cualquier servidor con API compatible con OpenAI. Solo destinos HTTPS públicos.</p>
+    <div id="connections-list" class="provider-cards"></div>
     <div class="settings-bottom"><button id="export-btn" class="ghost-btn">↓ Exportar historial JSON</button><p>La exportación no incluye claves ni archivos binarios.</p></div>
+  </dialog>
+
+  <dialog id="connection-dialog" class="modal">
+    <form id="connection-form" class="project-form">
+      <div class="modal-head"><div><h2 id="connection-title">Nueva conexión</h2><p>API de chat compatible con OpenAI.</p></div><button type="button" id="connection-close" class="icon-btn" aria-label="Cerrar conexión">×</button></div>
+      <label>Nombre<input id="connection-name" maxlength="70" required placeholder="Ej. Mi RunPod" /></label>
+      <label>Tipo<select id="connection-kind"><option value="openai">API compatible con OpenAI</option><option value="runpod-serverless">RunPod Serverless · vLLM</option><option value="runpod-pod">RunPod Pod · servidor compatible</option></select></label>
+      <p id="connection-help" class="connection-note"></p>
+      <label>URL base HTTPS<input id="connection-url" type="url" required placeholder="https://inferencia.ejemplo.com/v1" /></label>
+      <label>Modelo de texto<input id="connection-model" required maxlength="200" placeholder="ID exacto publicado por tu servidor" spellcheck="false" /></label>
+      <label>Modelo de imágenes (opcional)<input id="connection-image" maxlength="200" placeholder="Solo si existe /images/generations" spellcheck="false" /></label>
+      <label>Autenticación<select id="connection-auth"><option value="bearer">API Key · Bearer</option><option value="none">Sin clave (servidor público)</option></select></label>
+      <label id="connection-key-label">Clave de esta conexión<input id="connection-key" type="password" autocomplete="off" placeholder="Vacío conserva la clave al editar la misma URL" /></label>
+      <label>Formato de razonamiento<select id="connection-reasoning"><option value="none">No configurado</option><option value="openai">OpenAI · reasoning_effort</option><option value="deepseek">DeepSeek · thinking + reasoning_effort</option><option value="vllm">vLLM · enable_thinking (sin niveles)</option></select></label>
+      <label id="connection-levels-label" hidden>Niveles admitidos (IDs separados por comas)<input id="connection-levels" placeholder="low,medium,high,xhigh" /></label>
+      <p class="connection-note">Configura solo lo que tu servidor admita. «Muy alto» corresponde a xhigh; no todos los modelos lo permiten. No se envían las claves de otros proveedores. Los handlers /run y /runsync de RunPod necesitan un adaptador y no son una API de chat compatible por sí solos.</p>
+      <p id="connection-error" class="error-text" role="alert"></p>
+      <div class="form-actions"><button type="button" id="connection-cancel" class="ghost-btn">Cancelar</button><button id="connection-save" type="submit" class="primary">Guardar conexión</button></div>
+    </form>
   </dialog>
 
   <dialog id="project-dialog" class="modal">

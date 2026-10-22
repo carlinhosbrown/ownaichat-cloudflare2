@@ -1,4 +1,4 @@
-# OwnAIChat 0.2 — tu IA privada en Cloudflare
+# OwnAIChat 0.4 — tu IA privada en Cloudflare
 
 Continuación del MVP OwnChat 0.1, conservando su interfaz, tablas D1, contraseña, cookies de sesión y conectores. Una cuenta privada por instalación; sin registro público.
 
@@ -6,9 +6,87 @@ Continuación del MVP OwnChat 0.1, conservando su interfaz, tablas D1, contrase�
 
 Esta entrega incluye pruebas locales. No se ha desplegado ni verificado en una cuenta Cloudflare real. El aprovisionamiento mediante el botón y los límites reales de CPU del plan Free requieren esa comprobación antes del uso en producción.
 
+**Si tu instalación 0.2 o 0.3 ya funciona**, utiliza el ZIP de actualización y conserva tu `wrangler.jsonc`, tu D1 y los secretos existentes. Aplica la nueva migración **0002_custom_modes_images.sql** antes de publicar el Worker. No necesita R2 ni Access. Consulta `UPGRADE.md`.
+
+## Modos de respuesta
+
+El compositor permite cambiar el modo antes de cada mensaje, también dentro de una conversación existente:
+
+- **Automático:** no añade parámetros de razonamiento; respeta el comportamiento predeterminado del modelo, que puede incluir razonamiento.
+- **Sin razonamiento:** solo aparece si se conoce una forma compatible de desactivarlo o si es un modelo reconocido sin razonamiento configurable.
+- **Razonamiento:** muestra los niveles compatibles: mínimo, bajo, medio, alto, muy alto (`xhigh`) o máximo (`max`), según la familia. No todos los modelos tienen los mismos niveles ni permiten desactivarlo.
+- **Generar imagen:** aparece para modelos de imágenes o si el catálogo contiene alguno. Desde un modelo de texto, seleccionarlo cambia al primer modelo de imágenes compatible. Volver a Automático recupera un modelo de texto; también puedes cambiar el modelo directamente.
+
+DeepSeek Flash/Pro usan `thinking` y los niveles reales `low`, `high`, `max`; no se ofrecen niveles distintos que su API mapea al mismo esfuerzo alto. GPT y Gemini usan `reasoning_effort` con opciones condicionadas por familia. Claude 4.5 y anteriores reconocidos usan presupuestos de 1024/4096/8192 tokens para bajo/medio/alto; los adaptativos usan `output_config.effort`, con niveles adicionales solo en familias reconocidas. Claude adaptativo tiene un límite de 16000 tokens de salida en esta versión, incluido el razonamiento: un esfuerzo alto puede agotarlo antes de producir la respuesta final.
+
+El esfuerzo «Automático» dentro de Razonamiento elige medio, si existe, o alto; en vLLM activa el pensamiento sin intensidad. Para no cambiar ningún parámetro usa el **modo Automático**. Se ignoran los campos/bloques separados de razonamiento y solo se conserva el texto de respuesta, sin panel de pensamiento. Los servidores personalizados deben separar esos campos con su parser: no se filtra texto `<think>` incrustado por un servidor en el propio contenido de respuesta. El modo y opciones se guardan en D1 por chat y mensaje; otro dispositivo recupera la última selección usada.
+
+La detección está en `public/modes.js`: los catálogos no publican un esquema universal de capacidades y el reconocimiento por familias puede quedar desactualizado. Los modelos desconocidos mantienen Automático y la entrada manual. La compatibilidad final la determina la API. No se implementan búsqueda web, herramientas, audio, vídeo ni modo Pro de Responses.
+
+Referencias: [DeepSeek thinking](https://api-docs.deepseek.com/guides/thinking_mode/), [OpenAI Docs: razonamiento](https://developers.openai.com/api/docs/guides/reasoning), [Gemini OpenAI](https://ai.google.dev/gemini-api/docs/openai), [Claude thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking), [Claude esfuerzo](https://platform.claude.com/docs/en/build-with-claude/effort).
+
+## Generación de imágenes sin R2
+
+- **OpenAI:** GPT Image del catálogo o ID manual compatible, mediante `/v1/images/generations`; calidad y tamaños compatibles seleccionados. Calidad muy alta/máxima solo en GPT Image 2.5 reconocido. No se envía `response_format` a GPT Image.
+- **Gemini:** modelos cuyo ID contiene `image` y que admiten `generateContent`, mediante su API nativa. Calidad y tamaño automáticos, sin enviar opciones OpenAI.
+- **Custom:** configura «Modelo de imágenes» solo si el servidor implementa `/images/generations`, con respuesta `data[0].b64_json` o URL HTTPS pública. No se deduce ese soporte de cualquier handler RunPod.
+
+Una imagen por solicitud, PNG/JPEG/WebP, máximo **6 MiB** por imagen y 12 MiB de JSON. Se comprueba la firma del formato; no se admiten SVG/HTML ni se siguen redirecciones. Las URLs devueltas se descargan sin reenviar la clave y no se guardan en el historial.
+
+Las imágenes se guardan **en D1, divididas en fragmentos base64**, independientemente de los adjuntos de proyectos: no requieren activar R2. Consumen cuotas/almacenamiento D1 y aproximadamente un tercio adicional por base64; no está pensado como archivo masivo. Vista previa y descarga requieren sesión y nunca se cachean en la PWA. Borrar el chat elimina sus imágenes. La exportación JSON incluye metadatos, **no los binarios**: descarga las importantes y conserva una copia completa de D1.
+
+Cada generación utiliza la descripción actual y las instrucciones/documentos de texto del proyecto; no las imágenes anteriores. No hay edición, máscaras, visión ni fotos de entrada. Cambiar después a texto no envía píxeles al modelo. Las APIs de imágenes pueden exigir permisos y cobrar por solicitud; RunPod puede cobrar por GPU/arranque. Una solicitud fallida o agotada puede haber tenido coste: comprueba el estado antes de repetir. No hay reintentos automáticos.
+
+Referencias: [OpenAI Docs: imágenes](https://developers.openai.com/api/reference/resources/images/methods/generate), [Gemini imágenes](https://ai.google.dev/gemini-api/docs/image-generation).
+
+## APIs personalizadas y RunPod
+
+**Configuración → APIs personalizadas → Añadir conexión**. Hasta 20 conexiones; puedes editar/eliminar sin borrar sus chats. Aparecen como proveedores. Introduce nombre, tipo, URL base, ID exacto de modelo y clave Bearer independiente (o sin clave). El catálogo usa `/models`; si falla, conserva tus IDs y la entrada manual. El chat necesita **`/chat/completions` con streaming SSE de formato OpenAI**. No funciona con cualquier contrato API ni instala servidores.
+
+| Tipo | URL base de ejemplo | Clave |
+| --- | --- | --- |
+| API compatible con OpenAI | `https://inferencia.ejemplo.com/v1` | La del servidor |
+| RunPod Serverless vLLM | `https://api.runpod.ai/v2/ENDPOINT_ID/openai/v1` | Tu clave RunPod autorizada para el endpoint |
+| RunPod Pod | `https://POD_ID-8000.proxy.runpod.net/v1` | La del servidor vLLM/TGI/etc., si la exige; no necesariamente la de tu cuenta RunPod |
+
+En Pods expón el puerto HTTP del servidor mediante el proxy HTTPS. Sustituye ID y puerto por los reales. Los handlers `/run` y `/runsync`, incluidos workflows ComfyUI o handlers a medida, **no son compatibles directamente**: requieren un adaptador con contrato OpenAI. Un Pod sin servidor de inferencia tampoco basta.
+
+Configura exclusivamente el razonamiento que el servidor admita:
+
+- **No configurado:** solo Automático, sin parámetros extra.
+- **OpenAI:** `reasoning_effort`; declara sus niveles exactos (ej. `low,medium,high,xhigh`). Sin razonamiento necesita `none`.
+- **DeepSeek:** `thinking` + `reasoning_effort`, con sus niveles admitidos.
+- **vLLM:** `chat_template_kwargs.enable_thinking=true/false`, sin intensidad. Necesita un modelo y una plantilla compatibles; no añade esa capacidad a modelos que no la tienen.
+
+Las claves se cifran y nunca se devuelven al navegador. Dejar la clave vacía al editar la conserva **solo con la misma URL base**; cambiar de destino requiere introducirla de nuevo. No se reutiliza ninguna clave incorporada para otros servidores. La exportación de historial no incluye configuraciones ni claves.
+
+Solo destinos HTTPS públicos, puerto 443, sin credenciales ni secretos en la URL base. Se rechazan localhost, IPs literales y dominios locales comunes; no se siguen redirecciones. **No es aislamiento DNS ni protección completa frente a DNS rebinding:** configura solo servidores de confianza. Crear/usar conexiones requiere sesión; no es un proxy público. «Sin clave» no protege tu servidor: no lo expongas así si permite consumo de GPU sin autorización.
+
+Referencias: [RunPod vLLM OpenAI](https://docs.runpod.io/serverless/vllm/openai-compatibility), [puertos de Pods](https://docs.runpod.io/pods/configuration/expose-ports).
+
+## Elegir modelos
+
+En la cabecera hay un selector de proveedor y otro de **Modelo de IA**. Cambia el modelo antes de enviar el siguiente mensaje; también puedes hacerlo dentro de una conversación existente.
+
+- **DeepSeek:** opciones Flash (`deepseek-flash`) y Pro (`deepseek-v4-pro`). Las nuevas conversaciones sin preferencia guardada usan Flash; no se sustituye automáticamente el modelo de los chats anteriores.
+- **OpenAI:** al guardar tu API Key, el servidor consulta `/v1/models` y muestra los modelos de chat reconocidos en la respuesta de esa cuenta, incluidos identificadores de modelos ajustados cuando son reconocibles.
+- **Gemini y Claude:** también consultan su catálogo oficial, con paginación y nombres legibles cuando el proveedor los facilita.
+- **Actualizar modelos** (↻) vuelve a consultar el proveedor. La lista se reutiliza durante la sesión del navegador para evitar solicitudes repetidas. Cambiar o eliminar una API Key invalida esa lista.
+- **Otro modelo…** permite introducir un ID exacto que no aparezca en el selector, sin limitar los modelos válidos a la lista sugerida.
+
+La indicación **Modelos de tu API** significa que el catálogo se consultó correctamente. **Modelos sugeridos** identifica una lista local de orientación, utilizada antes de configurar una clave o cuando el proveedor no responde. No garantiza que todos esos modelos estén habilitados en tu cuenta. El detalle del aviso se muestra al situar el puntero sobre esa indicación; al actualizar manualmente también se muestra el error.
+
+La API Key se descifra solo en el Worker; la respuesta al navegador contiene únicamente modelos y avisos. Los fallos del catálogo no cierran la sesión ni bloquean la selección manual.
+
+La selección se recuerda por proveedor en ese navegador. El proveedor y modelo usados se guardan además en el chat de D1: al abrirlo desde otro dispositivo se recupera su última selección utilizada. Elegir otro modelo no modifica los mensajes anteriores.
+
+El conector OpenAI de texto sigue usando **Chat Completions**. El selector reconoce texto y GPT Image, y excluye familias conocidas de vídeo, embeddings, audio, Realtime, Codex y modelos Pro que requieren Responses. Gemini reconoce chat e imagen con `generateContent`. `/models` no declara compatibilidad por endpoint; el filtro es orientativo y no comprueba permisos/saldo. La entrada manual no añade otros endpoints o modalidades.
+
+Referencias oficiales: [DeepSeek](https://api-docs.deepseek.com/api/list-models/), [OpenAI Docs: lista de modelos](https://developers.openai.com/api/reference/resources/models/methods/list), [Gemini](https://ai.google.dev/api/models), [Claude](https://platform.claude.com/docs/en/api/models/list).
+
 ## Deploy to Cloudflare
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/carlinhosbrown/ownaichat)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TU_USUARIO/ownaichat)
 
 **El enlace anterior es una plantilla.** El ZIP no tiene un repositorio público asociado. Antes de usar o compartir el botón, sube el contenido de esta carpeta a un repositorio público de GitHub o GitLab y sustituye su URL:
 
@@ -23,7 +101,7 @@ Usa aquí tu URL real, sin marcadores. Este comando solo actualiza el botón del
 3. Usa Node.js 22.13 o superior, instalación `npm ci`, y **deploy `npm run deploy`** en Workers Builds. El deploy ejecuta `wrangler d1 migrations apply DB --remote` antes de `wrangler deploy`. El nombre de binding `DB`, en lugar del nombre físico de la base, permite que Cloudflare personalice el recurso durante la instalación.
 4. Cloudflare lee `.dev.vars.example` para solicitar los secretos. Genera dos valores privados y diferentes con `npm run secrets:generate` o ejecutando **dos veces** `openssl rand -hex 32`. Introduce un resultado como `BOOTSTRAP_TOKEN` y el otro como `VAULT_KEY`. Guárdalos como secretos del Worker, nunca como variables del frontend ni en el repositorio. Si no se solicitaron en el flujo, añádelos en Workers & Pages → tu Worker → Settings → Variables and Secrets, y despliega los cambios.
 5. Abre la URL del Worker, introduce tu token de instalación y crea una contraseña de 12–128 caracteres. Sin secretos válidos la instalación permanece bloqueada; no existe una cuenta ni contraseña predeterminada.
-6. Añade las API Keys desde Configuración. Elige un identificador de modelo habilitado en tu cuenta de DeepSeek, OpenAI, Gemini o Anthropic.
+6. Añade las API Keys desde Configuración. Elige un modelo del selector de DeepSeek, OpenAI, Gemini o Anthropic; si no aparece, utiliza Otro modelo… e introduce su ID.
 7. Después de crear la cuenta puedes eliminar `BOOTSTRAP_TOKEN` de los secretos del Worker. Conserva **la misma `VAULT_KEY`**: sigue siendo necesaria para iniciar sesión y descifrar las API Keys.
 
 El UUID `00000000-0000-0000-0000-000000000000` es un marcador para la plantilla; el flujo del botón debe reemplazarlo por el D1 creado antes de ejecutar las migraciones. Para despliegue manual debes sustituirlo tú. No existe aprovisionamiento automático de R2 por parte de la aplicación.
@@ -36,6 +114,7 @@ Referencias oficiales: [botón y aprovisionamiento](https://developers.cloudflar
 - Chats, instrucciones de proyectos y mensajes almacenados en D1; streaming SSE de las respuestas.
 - El mismo historial desde dispositivos diferentes al iniciar sesión en la **misma URL**. La interfaz consulta D1 al volver a la ventana o pestaña; también puedes recargarla. No utiliza WebSockets ni una sincronización continua en segundo plano.
 - DeepSeek, OpenAI, Gemini y Anthropic con endpoints oficiales fijos. Claves cifradas en D1 mediante AES-256-GCM, sin devolverlas al navegador.
+- Conexiones personalizadas y RunPod compatible, modos por mensaje e imágenes en D1 sin R2.
 - Exportación JSON de proyectos, chats, mensajes y metadatos de archivos; sin API Keys ni archivos binarios.
 - PWA responsive con caché de recursos estáticos, nunca de respuestas API ni conversaciones. El uso de los chats requiere conexión.
 
@@ -81,7 +160,7 @@ Cada `secret put` solicita el valor de forma interactiva. Si el primer deploy no
 1. Haz una copia de D1 y conserva `VAULT_KEY`. Si utilizabas adjuntos, conserva también el bucket original. No publiques las copias.
 2. Sustituye el código y **mantén el nombre real de tu Worker, su `database_id` y nombre de D1** en la configuración. El nombre de Worker predeterminado sigue siendo `ownchat-cloudflare` para facilitar la actualización; la marca visible pasa a OwnAIChat.
 3. Mantén el mismo secreto `VAULT_KEY`: cambiarlo impide comprobar la contraseña anterior y descifrar las claves. Se conservan el formato de contraseñas, las cookies `ownchat_session`/`__Host-ownchat_session` y las tablas del MVP.
-4. El esquema `0001_initial.sql` no cambia ni depende de R2/Access; no hay una migración destructiva ni una base nueva. `npm run deploy` aplica solo migraciones pendientes mediante el registro de Wrangler.
+4. `0001_initial.sql` no cambia. Añade **0002_custom_modes_images.sql**, que incorpora conexiones, opciones e imágenes sin eliminar datos. `npm run deploy` aplica las migraciones pendientes antes de publicar. No ejecutes el SQL de 0002 repetidamente a mano: Wrangler registra su aplicación. No necesitas otra base.
 5. Si quieres continuar usando archivos, configura la opción R2 antes de desplegar. Si la desactivas, los objetos no se borran: D1 conserva los metadatos y los proyectos/chats siguen disponibles. Rehabilita el binding al **bucket original** para recuperar las descargas.
 
 No borres D1, la tabla `owner`, los secretos ni el bucket para actualizar. El cambio de marca mantiene las preferencias locales del navegador. La nueva versión del Service Worker sustituye la caché estática anterior.
@@ -154,7 +233,7 @@ npm run deploy:dry
 
 Las pruebas ejecutan el Worker en workerd/Miniflare con D1 SQLite real emulado y R2 local cuando se solicita. Las respuestas de los cuatro proveedores y las claves públicas de Access se simulan: no llaman a proveedores reales ni consumen tokens.
 
-Se comprueban la configuración sin servicios opcionales, bootstrap cerrado, secretos, cookies, protección de origen, login/logout, limitación de intentos, proyectos, persistencia multidispositivo, exportación, claves cifradas, streaming de los cuatro conectores, límites y disponibilidad de adjuntos, conservación de datos antiguos, migraciones repetibles y JWT firmados/inválidos de Access en API y estáticos. También se prueban los scripts de generación de secretos y configuración del botón.
+Se comprueban autenticación, bootstrap, secretos, sesiones, proyectos, historial multidispositivo, R2/Access opcionales, catálogos y despliegue. Se añaden migración desde datos anteriores, parámetros nativos de razonamiento, rechazo de opciones incompatibles, custom/RunPod simulados, claves y cambios de URL, imágenes OpenAI/Gemini/custom, límites, fragmentación, descarga privada y borrado en cascada. No llaman a cuentas reales ni consumen tokens/GPU.
 
 El archivo `VALIDATION.md` registra los resultados de esta entrega y diferencia las pruebas locales de los pasos no realizados en Cloudflare.
 
@@ -163,6 +242,11 @@ El archivo `VALIDATION.md` registra los resultados de esta entrega y diferencia 
 ```text
 public/                  Interfaz, estilos, PWA y cabeceras
 src/worker.js            Contraseña, sesiones, D1, archivos y conectores
+src/models.js            Lectura de catálogos desde las APIs oficiales
+src/connections.js       Conexiones personalizadas y validación de destinos
+src/images.js            Generación y almacenamiento privado de imágenes en D1
+public/models.js         Sugerencias, valores iniciales y filtrado de modelos
+public/modes.js          Capacidades y parámetros compartidos por UI y Worker
 src/access.js            Validación opcional de Access
 migrations/              Esquema compatible con el MVP
 scripts/                 Secretos locales y botón de despliegue
@@ -172,4 +256,4 @@ wrangler.jsonc           Solo Worker + Static Assets + D1 por defecto
 package-lock.json        Versiones reproducibles de herramientas
 ```
 
-Licencia MIT, conservada del proyecto original. La entrega no incluye dependencias instaladas, secretos, bases locales ni archivos personales. Quedan pendientes despliegue real, pruebas con cuentas de proveedores, recuperación de contraseña, importación/restauración completa, OCR y contenido multimodal.
+Licencia MIT, conservada del proyecto original. La entrega no incluye dependencias instaladas, secretos, bases locales ni archivos personales. Pendientes: despliegue real, pruebas con proveedores/RunPod reales, recuperación de contraseña, restauración completa, OCR, edición de imágenes y entrada multimodal.

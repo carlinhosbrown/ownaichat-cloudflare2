@@ -1,6 +1,6 @@
 {
-  "name": "ownaichat-cloudflare2",
-  "version": "0.2.0",
+  "name": "ownaichat",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Private multi-model AI chat on Workers + Static Assets and D1; optional R2 and Access",
@@ -9,7 +9,7 @@
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",
     "deploy": "npm run db:remote && wrangler deploy",
-    "check": "node --check src/worker.js && node --check src/access.js && node --check public/app.js && node --check public/sw.js && node --check scripts/secrets.mjs && node --check scripts/deploy-button.mjs",
+    "check": "node --check src/worker.js && node --check src/access.js && node --check src/models.js && node --check src/connections.js && node --check src/images.js && node --check src/errors.js && node --check public/models.js && node --check public/modes.js && node --check public/app.js && node --check public/sw.js && node --check scripts/secrets.mjs && node --check scripts/deploy-button.mjs",
     "test": "node --test",
     "deploy:dry": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
     "secrets:local": "node scripts/secrets.mjs --local",

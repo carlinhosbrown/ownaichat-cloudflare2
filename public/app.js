@@ -1,7 +1,16 @@
+import {MODEL_DEFAULTS, MODEL_SUGGESTIONS, validModel} from './models.js';
+import {DEFAULT_GENERATION, EFFORT_LABELS, modelCapabilities} from './modes.js';
+
 const $ = selector => document.querySelector(selector);
 const el = (name, className, text) => {const node=document.createElement(name);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;};
-const MODEL_DEFAULTS={deepseek:'deepseek-chat',openai:'gpt-4.1-mini',gemini:'gemini-2.5-flash',anthropic:'claude-sonnet-4-5'};
-const state={projects:[],chats:[],configured:[],attachments:{available:false,message:'Adjuntos desactivados.'},selectedProject:null,selectedChat:null,messages:[],provider:localStorage.getItem('oc.provider')||'deepseek',models:JSON.parse(localStorage.getItem('oc.models')||'{}'),editingProject:null,busy:false,setup:false};
+const state={projects:[],chats:[],configured:[],catalogs:{},catalogVersions:{},customModels:{},attachments:{available:false,message:'Adjuntos desactivados.'},selectedProject:null,selectedChat:null,messages:[],provider:localStorage.getItem('oc.provider')||'deepseek',models:JSON.parse(localStorage.getItem('oc.models')||'{}'),editingProject:null,busy:false,setup:false};
+const modelLoads=new Map();
+Object.assign(state,{customProviders:[],generation:{...DEFAULT_GENERATION},lastTextModels:{},editingConnection:null});
+const PROVIDER_NAMES={deepseek:'DeepSeek',openai:'OpenAI',gemini:'Google Gemini',anthropic:'Anthropic Claude'};
+const currentConnection=()=>state.customProviders.find(connection=>connection.id===state.provider);
+const suggestedModels=provider=>{const connection=state.customProviders.find(item=>item.id===provider);return connection?[{id:connection.defaultModel,name:connection.defaultModel},...(connection.imageModel?[{id:connection.imageModel,name:connection.imageModel,kind:'image'}]:[])]:MODEL_SUGGESTIONS[provider]||[];};
+const capabilities=model=>modelCapabilities(state.provider,model||$('#model-input').value.trim(),currentConnection());
+const availableModels=()=>state.catalogs[state.provider]?.models||suggestedModels(state.provider);
 let toastTimer;
 function toast(message){const box=$('#toast');box.textContent=message;box.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>box.hidden=true,3800);}
 async function request(path, options={}) {
@@ -31,13 +40,92 @@ $('#auth-form').addEventListener('submit',async event=>{
 });
 async function refresh(){
   const [p,c,k,account]=await Promise.all([data('/api/projects'),data('/api/chats'),data('/api/providers'),data('/api/me')]);
-  state.projects=p.projects;state.chats=c.chats;state.configured=k.configured;state.attachments=account.features.attachments;
-  renderSidebar();renderContent();updateKeyStatus();
+  state.projects=p.projects;state.chats=c.chats;state.configured=k.configured;state.customProviders=k.customProviders||[];state.attachments=account.features.attachments;
+  renderSidebar();renderContent();applyModel();
 }
-function applyModel(){const provider=state.provider in MODEL_DEFAULTS?state.provider:'deepseek';state.provider=provider;$('#provider-select').value=provider;$('#model-input').value=state.models[provider]||MODEL_DEFAULTS[provider];updateKeyStatus();}
+function applyModel(){
+  const select=$('#provider-select');select.replaceChildren();
+  for(const [provider,name] of [...Object.entries(PROVIDER_NAMES),...state.customProviders.map(connection=>[connection.id,connection.name])]){const option=el('option','',name);option.value=provider;select.append(option);}
+  if(![...select.options].some(option=>option.value===state.provider)){
+    if(state.selectedChat){const missing=el('option','','Conexión eliminada');missing.value=state.provider;select.append(missing);}
+    else state.provider='deepseek';
+  }
+  select.value=state.provider;$('#model-input').value=state.models[state.provider]||currentConnection()?.defaultModel||MODEL_DEFAULTS[state.provider]||'';
+  renderModelPicker();updateKeyStatus();loadModels(state.provider);
+}
+function rememberModel(){const model=$('#model-input').value.trim();if(validModel(model)){state.models[state.provider]=model;localStorage.setItem('oc.models',JSON.stringify(state.models));}}
+function renderModelPicker(){
+  const provider=state.provider;
+  const catalog=state.catalogs[provider];
+  const models=catalog?.models||suggestedModels(provider);
+  const current=$('#model-input').value;
+  const select=$('#model-select');select.replaceChildren();
+  for(const model of models){const option=el('option','',(model.kind==='image'?'Imagen · ':'')+(model.name===model.id?model.id:`${model.name} · ${model.id}`));option.value=model.id;select.append(option);}
+  if(current&&!models.some(model=>model.id===current)){const saved=el('option','',`${current} (guardado)`);saved.value=current;select.append(saved);}
+  const custom=el('option','','Otro modelo…');custom.value='__custom__';select.append(custom);
+  select.value=state.customModels[provider]?'__custom__':current;
+  $('#model-input').hidden=!state.customModels[provider];
+  const status=$('#model-list-status');
+  status.textContent=modelLoads.has(provider)?'Actualizando modelos…':catalog?.source==='api'?'Modelos de tu API':'Modelos sugeridos';
+  status.title=catalog?.warning||(catalog?.source==='api'?'La disponibilidad y compatibilidad final dependen de tu cuenta y del modelo.':'Añade tu API Key para consultar los modelos del proveedor.');
+  $('#model-refresh').disabled=state.busy||modelLoads.has(provider)||!state.configured.includes(provider);
+  select.disabled=state.busy;$('#model-input').disabled=state.busy;$('#provider-select').disabled=state.busy;
+  renderGeneration();
+}
+function selectOptions(selector,values,labels,selected){const target=$(selector);target.replaceChildren();for(const value of values){const option=el('option','',labels[value]||value);option.value=value;target.append(option);}target.value=selected;target.disabled=state.busy;}
+function renderGeneration(){
+  const supported=capabilities(),generation=state.generation;
+  const imageModel=availableModels().find(model=>capabilities(model.id).kind==='image');
+  if(supported.kind==='image')generation.mode='image';
+  else if(generation.mode==='image'||generation.mode==='reasoning'&&!supported.levels.length||generation.mode==='direct'&&!supported.canDirect)generation.mode='auto';
+  const modes=supported.kind==='image'?['auto','image']:['auto',...(supported.canDirect?['direct']:[]),...(supported.levels.length?['reasoning']:[]),...(imageModel?['image']:[])];
+  selectOptions('#generation-mode',modes,{auto:'Automático',direct:'Sin razonamiento',reasoning:'Razonamiento',image:'Generar imagen'},generation.mode);
+  if(!['auto',...supported.levels].includes(generation.effort))generation.effort='auto';
+  if(!supported.qualities.includes(generation.quality))generation.quality=supported.qualities[0];
+  if(!supported.sizes.includes(generation.size))generation.size=supported.sizes[0];
+  selectOptions('#generation-effort',[...new Set(['auto',...supported.levels])],EFFORT_LABELS,generation.effort);
+  selectOptions('#image-quality',supported.qualities,EFFORT_LABELS,generation.quality);
+  selectOptions('#image-size',supported.sizes,{auto:'Automático'},generation.size);
+  $('#effort-control').hidden=generation.mode!=='reasoning'||supported.reasoningStyle==='vllm';
+  $('#quality-control').hidden=generation.mode!=='image'||supported.qualities.length<2;$('#size-control').hidden=generation.mode!=='image'||supported.sizes.length<2;
+  $('#generation-hint').textContent=generation.mode==='image'?'Una imagen por petición. Puede tener coste en tu proveedor. Se guarda en tu historial privado, sin R2.':generation.mode==='reasoning'?'Solo se muestra la respuesta final. Más razonamiento puede aumentar el tiempo y el coste.':generation.mode==='direct'?'Se solicita desactivar el razonamiento cuando el modelo lo permite.':'Se respeta el comportamiento predeterminado del modelo. Los niveles dependen de su compatibilidad.';
+  $('#prompt').placeholder=generation.mode==='image'?'Describe la imagen que quieres crear…':'Escribe un mensaje…';
+}
+$('#generation-mode').addEventListener('change',()=>{
+  const mode=$('#generation-mode').value;
+  if(mode==='image'&&capabilities().kind!=='image'){
+    const image=availableModels().find(model=>capabilities(model.id).kind==='image');if(!image)return;
+    state.lastTextModels[state.provider]=$('#model-input').value;$('#model-input').value=image.id;state.customModels[state.provider]=false;rememberModel();
+  }else if(mode!=='image'&&capabilities().kind==='image'){
+    const textModel=state.lastTextModels[state.provider]||availableModels().find(model=>capabilities(model.id).kind!=='image')?.id;
+    if(!textModel){toast('Selecciona un modelo de texto para volver al chat.');renderGeneration();return;}
+    $('#model-input').value=textModel;state.customModels[state.provider]=false;rememberModel();
+  }
+  state.generation.mode=mode;renderModelPicker();
+});
+for(const [selector,property] of [['#generation-effort','effort'],['#image-quality','quality'],['#image-size','size']])$(selector).addEventListener('change',()=>{state.generation[property]=$(selector).value;});
+function invalidateModels(provider){delete state.catalogs[provider];state.catalogVersions[provider]=(state.catalogVersions[provider]||0)+1;modelLoads.delete(provider);}
+async function loadModels(provider,force=false){
+  if(!state.configured.includes(provider))return;
+  if(!force&&state.catalogs[provider])return;
+  if(!force&&modelLoads.has(provider))return modelLoads.get(provider);
+  const version=state.catalogVersions[provider]||0;
+  const loading=(async()=>{
+    try{
+      const catalog=await data(`/api/providers/${provider}/models`);
+      if(version!==(state.catalogVersions[provider]||0)||!state.configured.includes(provider))return;
+      state.catalogs[provider]=catalog;
+      if(force&&catalog.warning)toast(catalog.warning);
+    }catch(error){if(force)toast(error.message);}
+    finally{if(modelLoads.get(provider)===loading)modelLoads.delete(provider);if(provider===state.provider)renderModelPicker();}
+  })();
+  modelLoads.set(provider,loading);if(provider===state.provider)renderModelPicker();return loading;
+}
 function updateKeyStatus(){$('#key-status').textContent=state.configured.includes(state.provider)?'API Key configurada':'Configura tu API Key';}
-$('#provider-select').addEventListener('change',()=>{state.provider=$('#provider-select').value;localStorage.setItem('oc.provider',state.provider);applyModel();});
-$('#model-input').addEventListener('change',()=>{state.models[state.provider]=$('#model-input').value.trim();localStorage.setItem('oc.models',JSON.stringify(state.models));});
+$('#provider-select').addEventListener('change',()=>{state.provider=$('#provider-select').value;state.generation={...DEFAULT_GENERATION};localStorage.setItem('oc.provider',state.provider);applyModel();});
+$('#model-select').addEventListener('change',()=>{state.customModels[state.provider]=$('#model-select').value==='__custom__';if(!state.customModels[state.provider]){$('#model-input').value=$('#model-select').value;rememberModel();}renderModelPicker();if(state.customModels[state.provider])$('#model-input').focus();});
+$('#model-input').addEventListener('change',()=>{rememberModel();renderModelPicker();});
+$('#model-refresh').addEventListener('click',()=>loadModels(state.provider,true));
 function mobileClose(){$('#sidebar').classList.remove('open');$('#mobile-shade').hidden=true;}
 $('#sidebar-open').addEventListener('click',()=>{$('#sidebar').classList.add('open');$('#mobile-shade').hidden=false;});
 $('#sidebar-close').addEventListener('click',mobileClose);$('#mobile-shade').addEventListener('click',mobileClose);
@@ -61,9 +149,14 @@ function renderContent(){
 function newChat(){if(state.busy)return;state.selectedChat=null;state.messages=[];renderSidebar();renderContent();$('#prompt').focus();}
 $('#new-chat').addEventListener('click',()=>{state.selectedProject=null;newChat();mobileClose();});
 async function selectProject(projectId){if(state.busy)return;state.selectedProject=projectId;state.selectedChat=null;state.messages=[];renderSidebar();renderContent();}
-async function openChat(chatId){if(state.busy)return;try{const response=await data(`/api/chats/${chatId}`);state.selectedChat=chatId;state.selectedProject=response.chat.project_id;state.messages=response.messages;state.provider=response.chat.provider;state.models[state.provider]=response.chat.model;applyModel();renderSidebar();renderContent();scrollToBottom();}catch(e){toast(e.message);}}
+async function openChat(chatId){if(state.busy)return;try{const response=await data(`/api/chats/${chatId}`);state.selectedChat=chatId;state.selectedProject=response.chat.project_id;state.messages=response.messages;state.provider=response.chat.provider;state.models[state.provider]=response.chat.model;state.generation={...DEFAULT_GENERATION,...response.chat.settings};state.customModels[state.provider]=false;applyModel();renderSidebar();renderContent();scrollToBottom();}catch(e){toast(e.message);}}
 async function deleteChat(c){if(state.busy)return;if(!confirm(`¿Eliminar la conversación «${c.title}»?`))return;try{await data(`/api/chats/${c.id}`,{method:'DELETE'});if(state.selectedChat===c.id){state.selectedChat=null;state.messages=[];}await refresh();}catch(e){toast(e.message);}}
-function appendMessage(msg){const outer=el('article','message '+msg.role);if(msg.role==='assistant')outer.append(el('div','avatar','✦'));const body=el('div','message-content',msg.content);outer.append(body);$('#messages').append(outer);return body;}
+function fillMessage(body,msg){
+  body.replaceChildren();body.append(el('div','message-text',msg.content||''));
+  for(const image of msg.images||[]){if(!/^\/api\/images\/[a-f0-9-]{36}$/.test(image.url))continue;const picture=el('img','generated-image');picture.src=image.url;picture.alt='Imagen generada por IA';picture.loading='lazy';picture.addEventListener('load',scrollToBottom);const link=el('a','image-download','↓ Descargar imagen');link.href=image.url+'?download=1';link.download='';body.append(picture,link);}
+  if(msg.role==='assistant'&&msg.settings?.mode&&msg.settings.mode!=='auto'){const settings=msg.settings;body.append(el('small','generation-badge',settings.mode==='image'?`Imagen · ${EFFORT_LABELS[settings.quality]||settings.quality||'Automático'}`:settings.mode==='direct'?'Sin razonamiento':`Razonamiento · ${EFFORT_LABELS[settings.effort]||'Automático'}`));}
+}
+function appendMessage(msg){const outer=el('article','message '+msg.role);if(msg.role==='assistant')outer.append(el('div','avatar','✦'));const body=el('div','message-content');fillMessage(body,msg);outer.append(body);$('#messages').append(outer);return body;}
 function renderMessages(){const messages=$('#messages');messages.replaceChildren();for(const m of state.messages)appendMessage(m);scrollToBottom();}
 function scrollToBottom(){$('#chat-view').scrollTop=$('#chat-view').scrollHeight;}
 $('#prompt').addEventListener('input',()=>{const t=$('#prompt');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,170)+'px';});
@@ -72,26 +165,27 @@ for(const starter of document.querySelectorAll('.starter'))starter.addEventListe
 $('#composer').addEventListener('submit',async event=>{
   event.preventDefault();if(state.busy)return;
   const prompt=$('#prompt').value.trim();if(!prompt)return;
-  const provider=state.provider,model=$('#model-input').value.trim();
-  if(!/^[\w.\-/:]{2,100}$/.test(model)||model.includes('://')||model.startsWith('/')){toast('Introduce un identificador de modelo válido.');return;}
+  const provider=state.provider,model=$('#model-input').value.trim(),settings={...state.generation};
+  if(!validModel(model)){toast('Introduce un identificador de modelo válido.');return;}
   if(!state.configured.includes(provider)){openSettings();toast(`Primero añade la API Key de ${provider}.`);return;}
-  state.busy=true;$('#send').disabled=true;$('#prompt').disabled=true;
+  rememberModel();state.busy=true;$('#send').disabled=true;$('#prompt').disabled=true;renderModelPicker();
   try {
     let chatId=state.selectedChat;
-    if(!chatId){const created=await data('/api/chats',{method:'POST',body:{projectId:state.selectedProject,provider,model}});chatId=created.id;state.selectedChat=chatId;state.messages=[];$('#messages').replaceChildren();}
+    if(!chatId){const created=await data('/api/chats',{method:'POST',body:{projectId:state.selectedProject,provider,model,settings}});chatId=created.id;state.selectedChat=chatId;state.messages=[];$('#messages').replaceChildren();}
     $('#welcome').hidden=true;$('#project-view').hidden=true;$('#messages').hidden=false;
     state.messages.push({role:'user',content:prompt});appendMessage({role:'user',content:prompt});
     $('#prompt').value='';$('#prompt').style.height='auto';
-    const bubble=appendMessage({role:'assistant',content:'Pensando…'});bubble.classList.add('typing');scrollToBottom();
-    const resp=await request(`/api/chats/${chatId}/messages`,{method:'POST',body:{content:prompt,provider,model}});
+    const bubble=appendMessage({role:'assistant',content:settings.mode==='image'?'Generando imagen…':'Pensando…'});bubble.classList.add('typing');scrollToBottom();
+    const resp=await request(`/api/chats/${chatId}/messages`,{method:'POST',body:{content:prompt,provider,model,settings}});
+    if(resp.headers.get('content-type')?.includes('application/json')){const result=await resp.json();state.messages.push(result.message);fillMessage(bubble,result.message);bubble.classList.remove('typing');scrollToBottom();return;}
     const reader=resp.body.getReader(),decoder=new TextDecoder();let streamBuffer='',answer='',errorMsg='';
     while(true){const {done,value}=await reader.read();if(done)break;streamBuffer+=decoder.decode(value,{stream:true});let pos;
       while((pos=streamBuffer.indexOf('\n'))>=0){const line=streamBuffer.slice(0,pos).trim();streamBuffer=streamBuffer.slice(pos+1);if(!line.startsWith('data:'))continue;try{const item=JSON.parse(line.slice(5));if(item.delta){answer+=item.delta;bubble.textContent=answer;bubble.classList.remove('typing');scrollToBottom();}if(item.error){errorMsg=item.error;}}catch{/* ignore malformed chunk */}}
     }
     if(errorMsg)throw new Error(errorMsg);
-    if(answer){state.messages.push({role:'assistant',content:answer});}else throw new Error('El modelo no devolvió una respuesta.');
+    if(answer){const message={role:'assistant',content:answer,settings};state.messages.push(message);fillMessage(bubble,message);}else throw new Error('El modelo no devolvió una respuesta.');
   }catch(error){toast(error.message);const last=$('#messages .message:last-child .message-content');if(last && last.classList.contains('typing')){last.textContent='No se pudo generar la respuesta. '+error.message;last.classList.remove('typing');}}
-  finally{state.busy=false;$('#send').disabled=false;$('#prompt').disabled=false;try{const chats=await data('/api/chats');state.chats=chats.chats;renderSidebar();updateContext(state.chats.find(c=>c.id===state.selectedChat)?.title);}catch{}$('#prompt').focus();}
+  finally{state.busy=false;$('#send').disabled=false;$('#prompt').disabled=false;renderModelPicker();try{const chats=await data('/api/chats');state.chats=chats.chats;renderSidebar();updateContext(state.chats.find(c=>c.id===state.selectedChat)?.title);}catch{}$('#prompt').focus();}
 });
 function renderProject(){const target=$('#project-view');target.replaceChildren();const project=state.projects.find(p=>p.id===state.selectedProject);if(!project)return;
   target.append(el('div','project-symbol','▦'),el('h1','',project.name),el('p','sub',state.attachments.available?'Las conversaciones de este proyecto comparten instrucciones y documentos de referencia.':'Las conversaciones de este proyecto comparten sus instrucciones.'));
@@ -115,9 +209,16 @@ $('#settings-btn').addEventListener('click',openSettings);$('#top-settings').add
 function renderSettings(){const list=$('#providers-list');list.replaceChildren();for(const [provider,name] of Object.entries({deepseek:'DeepSeek',openai:'OpenAI',gemini:'Google Gemini',anthropic:'Anthropic Claude'})){
     const card=el('div','provider-card'),head=el('div','provider-head');head.append(el('strong','',name),el('small','',state.configured.includes(provider)?'✓ Configurada':'Sin clave'));card.append(head);
     const form=el('form');const input=el('input');input.type='password';input.placeholder='Pega tu API Key';input.autocomplete='off';input.required=true;const save=el('button','','Guardar');save.type='submit';form.append(input,save);
-    if(state.configured.includes(provider)){const del=el('button','remove','Quitar');del.type='button';del.addEventListener('click',async()=>{if(!confirm(`¿Eliminar la API Key de ${name}?`))return;try{await data(`/api/providers/${provider}`,{method:'DELETE'});state.configured=state.configured.filter(x=>x!==provider);renderSettings();updateKeyStatus();}catch(e){toast(e.message);}});form.append(del);}
-    form.addEventListener('submit',async e=>{e.preventDefault();save.disabled=true;try{await data(`/api/providers/${provider}`,{method:'PUT',body:{key:input.value}});if(!state.configured.includes(provider))state.configured.push(provider);renderSettings();updateKeyStatus();toast('API Key guardada de forma cifrada.');}catch(e){toast(e.message);}finally{save.disabled=false;}});card.append(form);list.append(card);
-  }}
+    if(state.configured.includes(provider)){const del=el('button','remove','Quitar');del.type='button';del.addEventListener('click',async()=>{if(!confirm(`¿Eliminar la API Key de ${name}?`))return;try{await data(`/api/providers/${provider}`,{method:'DELETE'});state.configured=state.configured.filter(x=>x!==provider);invalidateModels(provider);renderSettings();updateKeyStatus();renderModelPicker();}catch(e){toast(e.message);}});form.append(del);}
+    form.addEventListener('submit',async e=>{e.preventDefault();save.disabled=true;try{await data(`/api/providers/${provider}`,{method:'PUT',body:{key:input.value}});if(!state.configured.includes(provider))state.configured.push(provider);invalidateModels(provider);renderSettings();updateKeyStatus();loadModels(provider);toast('API Key guardada de forma cifrada.');}catch(e){toast(e.message);}finally{save.disabled=false;}});card.append(form);list.append(card);
+  }renderConnections();}
+function renderConnections(){const list=$('#connections-list');list.replaceChildren();for(const connection of state.customProviders){const card=el('div','provider-card'),head=el('div','provider-head');head.append(el('strong','',connection.name),el('small','',connection.authType==='none'?'Sin clave':'✓ Cifrada'));card.append(head,el('p','connection-endpoint',connection.baseUrl),el('p','connection-note',connection.defaultModel));const actions=el('div','connection-actions'),edit=el('button','ghost-btn','Editar'),remove=el('button','ghost-btn','Eliminar');edit.type=remove.type='button';edit.addEventListener('click',()=>openConnection(connection));remove.addEventListener('click',async()=>{if(!confirm(`¿Eliminar «${connection.name}»? Su historial se conserva.`))return;try{await data(`/api/connections/${connection.id}`,{method:'DELETE'});invalidateModels(connection.id);await refresh();renderSettings();}catch(error){toast(error.message);}});actions.append(edit,remove);card.append(actions);list.append(card);}if(!state.customProviders.length)list.append(el('p','connection-note','Todavía no hay conexiones personalizadas.'));}
+function connectionHints(){const kind=$('#connection-kind').value;$('#connection-help').textContent=kind==='runpod-serverless'?'URL: https://api.runpod.ai/v2/ENDPOINT_ID/openai/v1 · Requiere un worker vLLM compatible; usa la clave de RunPod.':kind==='runpod-pod'?'URL: https://POD_ID-8000.proxy.runpod.net/v1 · Expón el puerto HTTP del servidor de modelos. La clave es la del servidor, si la requiere.':'URL del servidor hasta /v1 (o la base equivalente), sin /chat/completions. El servidor debe admitir chat en streaming SSE.';$('#connection-key-label').hidden=$('#connection-auth').value==='none';$('#connection-key').required=$('#connection-auth').value==='bearer'&&!state.editingConnection;$('#connection-levels-label').hidden=!['openai','deepseek'].includes($('#connection-reasoning').value);}
+function openConnection(connection=null){state.editingConnection=connection?.id||null;$('#connection-title').textContent=connection?'Editar conexión':'Nueva conexión';$('#connection-name').value=connection?.name||'';$('#connection-kind').value=connection?.kind||'openai';$('#connection-url').value=connection?.baseUrl||'';$('#connection-model').value=connection?.defaultModel||'';$('#connection-image').value=connection?.imageModel||'';$('#connection-auth').value=connection?.authType||'bearer';$('#connection-key').value='';$('#connection-reasoning').value=connection?.reasoningStyle||'none';$('#connection-levels').value=(connection?.effortLevels||[]).join(',');$('#connection-error').textContent='';connectionHints();$('#connection-dialog').showModal();}
+$('#add-connection').addEventListener('click',()=>openConnection());
+for(const selector of ['#connection-close','#connection-cancel'])$(selector).addEventListener('click',()=>$('#connection-dialog').close());
+for(const selector of ['#connection-kind','#connection-auth','#connection-reasoning'])$(selector).addEventListener('change',connectionHints);
+$('#connection-form').addEventListener('submit',async event=>{event.preventDefault();$('#connection-save').disabled=true;$('#connection-error').textContent='';const body={name:$('#connection-name').value,kind:$('#connection-kind').value,baseUrl:$('#connection-url').value,defaultModel:$('#connection-model').value.trim(),imageModel:$('#connection-image').value.trim(),authType:$('#connection-auth').value,key:$('#connection-key').value,reasoningStyle:$('#connection-reasoning').value,effortLevels:$('#connection-levels').value.split(',').map(level=>level.trim()).filter(Boolean)};try{const result=await data(state.editingConnection?`/api/connections/${state.editingConnection}`:'/api/connections',{method:state.editingConnection?'PUT':'POST',body});invalidateModels(result.id);$('#connection-key').value='';$('#connection-dialog').close();state.provider=result.id;state.models[result.id]=body.defaultModel;state.generation={...DEFAULT_GENERATION};await refresh();renderSettings();toast('Conexión guardada. Seleccionada para tu próximo mensaje.');}catch(error){$('#connection-error').textContent=error.message;}finally{$('#connection-save').disabled=false;}});
 $('#export-btn').addEventListener('click',async()=>{try{const response=await request('/api/export');const blob=await response.blob();const url=URL.createObjectURL(blob);const a=el('a');a.href=url;a.download='ownchat-export-'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(url);}catch(e){toast(e.message);}});
 $('#logout-btn').addEventListener('click',async()=>{try{await data('/api/logout',{method:'POST'});showAuth(true);mobileClose();}catch(e){toast(e.message);}});
 window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();state.selectedProject=null;newChat();mobileClose();}});
