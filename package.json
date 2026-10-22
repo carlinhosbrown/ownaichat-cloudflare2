@@ -1,0 +1,39 @@
+{
+  "name": "ownaichat-cloudflare2",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Private multi-model AI chat on Workers + Static Assets and D1; optional R2 and Access",
+  "scripts": {
+    "dev": "wrangler dev",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "deploy": "npm run db:remote && wrangler deploy",
+    "check": "node --check src/worker.js && node --check src/access.js && node --check public/app.js && node --check public/sw.js && node --check scripts/secrets.mjs && node --check scripts/deploy-button.mjs",
+    "test": "node --test",
+    "deploy:dry": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "secrets:local": "node scripts/secrets.mjs --local",
+    "secrets:generate": "node scripts/secrets.mjs",
+    "deploy:button": "node scripts/deploy-button.mjs"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "devDependencies": {
+    "miniflare": "5.20261019.1-beta",
+    "wrangler": "4.151.3"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "Private D1 database for chats, projects and account."
+      },
+      "BOOTSTRAP_TOKEN": {
+        "description": "Private first-installation token: generate with openssl rand -hex 32. Use a different value from VAULT_KEY. Never commit. May be removed after setup."
+      },
+      "VAULT_KEY": {
+        "description": "Required permanent secret: 64 hex characters from openssl rand -hex 32. Back up securely; do not rotate on an existing installation."
+      }
+    }
+  }
+}

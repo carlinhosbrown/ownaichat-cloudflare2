@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ownaichat-cloudflare2",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-16",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ownchat-db",
+      "database_id": "6fda8844-6526-41e9-9e6d-33741e771511",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "FILES_ENABLED": "false",
+    "ACCESS_ENABLED": "false"
+  }
+}

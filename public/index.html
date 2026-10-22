@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#101820" />
+  <meta name="description" content="Tu espacio privado de IA, proyectos y conversaciones." />
+  <meta name="referrer" content="no-referrer" />
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icons/apple-icon.svg" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="stylesheet" href="/styles.css" />
+  <title>OwnAIChat — Tu IA privada</title>
+</head>
+<body>
+  <div id="auth" class="auth-shell" hidden>
+    <div class="auth-card">
+      <div class="logo-mark big">✦</div>
+      <h1>OwnAIChat</h1>
+      <p id="auth-subtitle" class="muted">Tu espacio privado de inteligencia artificial.</p>
+      <div id="config-warning" class="warning" hidden>Configura los secretos privados de esta instalación en tu Worker. Consulta el README; después de activar la cuenta solo se necesita conservar <code>VAULT_KEY</code>.</div>
+      <form id="auth-form">
+        <label id="token-label" hidden>Token de instalación<input id="setup-token" name="token" type="password" autocomplete="off" placeholder="Token configurado en Cloudflare" /></label>
+        <label>Contraseña privada<input id="auth-password" name="password" type="password" autocomplete="current-password" minlength="12" placeholder="Mínimo 12 caracteres" required /></label>
+        <button id="auth-submit" class="primary wide" type="submit">Entrar en mi espacio</button>
+        <p id="auth-error" class="error-text" role="alert"></p>
+      </form>
+      <div class="auth-note">Sin rastreadores · Código abierto · Tus propios modelos</div>
+    </div>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <div id="mobile-shade" class="shade" hidden></div>
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-top">
+        <div class="brand"><div class="logo-mark">✦</div><span>OwnAIChat</span><span class="brand-tag">privado</span></div>
+        <button id="sidebar-close" class="icon-btn mobile-only" aria-label="Cerrar menú">×</button>
+      </div>
+      <button id="new-chat" class="new-chat-btn"><span class="plus">＋</span> Nueva conversación <span class="shortcut">⌘ K</span></button>
+      <div class="sidebar-search"><span>⌕</span><input type="search" id="search" placeholder="Buscar conversaciones" aria-label="Buscar conversaciones" /></div>
+      <div class="sidebar-scroll">
+        <div class="section-heading"><span>PROYECTOS</span><button id="add-project" class="quiet" title="Nuevo proyecto">＋</button></div>
+        <nav id="project-list" class="nav-list"><p class="placeholder-small">Crea tu primer proyecto</p></nav>
+        <div class="section-heading recent-heading"><span>CONVERSACIONES</span></div>
+        <nav id="chat-list" class="nav-list"><p class="placeholder-small">Aún no hay conversaciones</p></nav>
+      </div>
+      <div class="sidebar-footer">
+        <button id="settings-btn" class="footer-action"><span>⚙</span> Configuración <span class="footer-caret">↗</span></button>
+        <button id="logout-btn" class="footer-action"><span>⇥</span> Cerrar sesión</button>
+        <div class="sidebar-version">OwnAIChat v0.2 · Open Source</div>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <button id="sidebar-open" class="icon-btn mobile-only" title="Abrir menú">☰</button>
+        <div class="topbar-title" id="context-title">Conversación nueva</div>
+        <div class="top-actions">
+          <label class="provider-select"><span class="provider-dot"></span><select id="provider-select" aria-label="Proveedor de IA"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="gemini">Gemini</option><option value="anthropic">Claude</option></select></label>
+          <input id="model-input" class="model-input" aria-label="Modelo de IA" title="Identificador exacto del modelo" value="deepseek-chat" spellcheck="false" />
+          <button id="top-settings" class="icon-btn top-settings" title="Configurar API Keys">⚙</button>
+        </div>
+      </header>
+      <div id="chat-view" class="chat-view">
+        <div id="welcome" class="welcome">
+          <div class="welcome-symbol">✦</div>
+          <h1>¿En qué puedo ayudarte?</h1>
+          <p>Un lugar para tus ideas, tus proyectos y tus conversaciones. Tú eliges el modelo de IA.</p>
+          <div class="starter-grid">
+            <button class="starter" data-prompt="Ayúdame a planificar un nuevo proyecto de software."><span>◇</span><strong>Planificar una idea</strong><small>De la idea al primer paso</small></button>
+            <button class="starter" data-prompt="Explícame paso a paso este tema de manera sencilla."><span>✎</span><strong>Aprender algo</strong><small>Explicaciones a tu ritmo</small></button>
+            <button class="starter" data-prompt="Ayúdame a escribir un texto profesional."><span>▤</span><strong>Crear contenido</strong><small>Escritura con IA</small></button>
+          </div>
+        </div>
+        <div id="project-view" class="project-view" hidden></div>
+        <div id="messages" class="messages" aria-live="polite" hidden></div>
+      </div>
+      <div class="compose-wrap">
+        <form id="composer" class="composer">
+          <textarea id="prompt" rows="1" maxlength="16000" placeholder="Escribe un mensaje..." aria-label="Mensaje a la IA"></textarea>
+          <div class="composer-bottom"><div class="composer-hint"><span id="active-context">Sin proyecto</span><span class="composer-sep">·</span><span id="key-status">Configura tu API Key</span></div><button id="send" type="submit" class="send-btn" title="Enviar mensaje">↑</button></div>
+        </form>
+        <div class="compose-caption">OwnAIChat puede equivocarse. Comprueba la información importante.</div>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="settings-dialog" class="modal">
+    <form method="dialog" class="modal-head"><div><h2>Configuración</h2><p>Gestiona tus API Keys de manera privada.</p></div><button class="icon-btn" aria-label="Cerrar">×</button></form>
+    <div class="settings-info">🔒 Tus claves se cifran en el servidor antes de guardarse en D1. El navegador nunca vuelve a recibirlas.</div>
+    <div id="providers-list" class="provider-cards"></div>
+    <div class="settings-bottom"><button id="export-btn" class="ghost-btn">↓ Exportar historial JSON</button><p>La exportación no incluye claves ni archivos binarios.</p></div>
+  </dialog>
+
+  <dialog id="project-dialog" class="modal">
+    <form id="project-form" class="project-form">
+      <div class="modal-head"><div><h2 id="project-dialog-title">Nuevo proyecto</h2><p>Organiza el contexto de tus conversaciones.</p></div><button type="button" id="project-dialog-close" class="icon-btn">×</button></div>
+      <label>Nombre<input id="project-name" required maxlength="90" placeholder="Ej. Mi aplicación, trabajo, estudios..." /></label>
+      <label>Instrucciones para la IA<textarea id="project-instructions" rows="6" maxlength="10000" placeholder="Qué debe saber y cómo quieres que responda dentro de este proyecto..."></textarea></label>
+      <div class="form-actions"><button type="button" id="project-cancel" class="ghost-btn">Cancelar</button><button type="submit" class="primary">Guardar proyecto</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
